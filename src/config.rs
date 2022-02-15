@@ -294,6 +294,7 @@ impl Default for Config {
         }
     }
 }
+
 impl<'de> Deserialize<'de> for Config {
     fn deserialize<D: Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
         let raw = Value::deserialize(de)?;
@@ -310,10 +311,10 @@ impl<'de> Deserialize<'de> for Config {
             return Ok(Config::from_legacy(raw));
         }
 
+        use serde::de::Error;
         let mut table = match raw {
             Value::Table(t) => t,
             _ => {
-                use serde::de::Error;
                 return Err(D::Error::custom(
                     "A config file should always be a toml table",
                 ));
@@ -322,17 +323,20 @@ impl<'de> Deserialize<'de> for Config {
 
         let book: BookConfig = table
             .remove("book")
-            .and_then(|value| value.try_into().ok())
+            .map(|book| book.try_into().map_err(D::Error::custom))
+            .transpose()?
             .unwrap_or_default();
 
         let build: BuildConfig = table
             .remove("build")
-            .and_then(|value| value.try_into().ok())
+            .map(|build| build.try_into().map_err(D::Error::custom))
+            .transpose()?
             .unwrap_or_default();
 
         let rust: RustConfig = table
             .remove("rust")
-            .and_then(|value| value.try_into().ok())
+            .map(|rust| rust.try_into().map_err(D::Error::custom))
+            .transpose()?
             .unwrap_or_default();
 
         Ok(Config {
@@ -463,6 +467,9 @@ pub struct RustConfig {
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 /// Rust edition to use for the code.
 pub enum RustEdition {
+    /// The 2021 edition of Rust
+    #[serde(rename = "2021")]
+    E2021,
     /// The 2018 edition of Rust
     #[serde(rename = "2018")]
     E2018,
@@ -571,7 +578,7 @@ impl Default for HtmlConfig {
 impl HtmlConfig {
     /// Returns the directory of theme from the provided root directory. If the
     /// directory is not present it will append the default directory of "theme"
-    pub fn theme_dir(&self, root: &PathBuf) -> PathBuf {
+    pub fn theme_dir(&self, root: &Path) -> PathBuf {
         match self.theme {
             Some(ref d) => root.join(d),
             None => root.join("theme"),
@@ -585,11 +592,16 @@ impl HtmlConfig {
 pub struct Print {
     /// Whether print support is enabled.
     pub enable: bool,
+    /// Insert page breaks between chapters. Default: `true`.
+    pub page_break: bool,
 }
 
 impl Default for Print {
     fn default() -> Self {
-        Self { enable: true }
+        Self {
+            enable: true,
+            page_break: true,
+        }
     }
 }
 
@@ -656,7 +668,7 @@ pub struct Search {
     pub boost_paragraph: u8,
     /// True if the searchword `micro` should match `microwave`. Default: `true`.
     pub expand: bool,
-    /// Documents are split into smaller parts, seperated by headings. This defines, until which
+    /// Documents are split into smaller parts, separated by headings. This defines, until which
     /// level of heading documents should be split. Default: `3`. (`### This is a level 3 heading`)
     pub heading_split_level: u8,
     /// Copy JavaScript files for the search functionality to the output directory?
@@ -845,6 +857,26 @@ mod tests {
 
         let rust_should_be = RustConfig {
             edition: Some(RustEdition::E2018),
+        };
+
+        let got = Config::from_str(src).unwrap();
+        assert_eq!(got.rust, rust_should_be);
+    }
+
+    #[test]
+    fn edition_2021() {
+        let src = r#"
+        [book]
+        title = "mdBook Documentation"
+        description = "Create book from markdown files. Like Gitbook but implemented in Rust"
+        authors = ["Mathieu David"]
+        src = "./source"
+        [rust]
+        edition = "2021"
+        "#;
+
+        let rust_should_be = RustConfig {
+            edition: Some(RustEdition::E2021),
         };
 
         let got = Config::from_str(src).unwrap();
@@ -1069,5 +1101,58 @@ mod tests {
         let html_config = got.html_config().unwrap();
         assert_eq!(html_config.input_404, Some("missing.md".to_string()));
         assert_eq!(&get_404_output_file(&html_config.input_404), "missing.html");
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid configuration file")]
+    fn invalid_language_type_error() {
+        let src = r#"
+        [book]
+        title = "mdBook Documentation"
+        language = ["en", "pt-br"]
+        description = "Create book from markdown files. Like Gitbook but implemented in Rust"
+        authors = ["Mathieu David"]
+        src = "./source"
+        "#;
+
+        Config::from_str(src).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid configuration file")]
+    fn invalid_title_type() {
+        let src = r#"
+        [book]
+        title = 20
+        language = "en"
+        description = "Create book from markdown files. Like Gitbook but implemented in Rust"
+        authors = ["Mathieu David"]
+        src = "./source"
+        "#;
+
+        Config::from_str(src).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid configuration file")]
+    fn invalid_build_dir_type() {
+        let src = r#"
+        [build]
+        build-dir = 99
+        create-missing = false
+        "#;
+
+        Config::from_str(src).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid configuration file")]
+    fn invalid_rust_edition() {
+        let src = r#"
+        [rust]
+        edition = "1999"
+        "#;
+
+        Config::from_str(src).unwrap();
     }
 }
